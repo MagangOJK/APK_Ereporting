@@ -360,7 +360,7 @@ if file:
         st.download_button(
             label="📥 Download Hasil Lengkap",
             data=excel_data,
-            file_name='hasil_lengkap_sipeduli_tflite.xlsx',
+            file_name='hasil_lengkap_ereporting.xlsx',
             mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
 else:
