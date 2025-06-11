@@ -254,7 +254,7 @@ def to_excel(df):
     return output.getvalue()
 
 # --- Streamlit UI ---
-st.title("📊 Aplikasi Klasifikasi Kendala APOLO IKNB")
+st.title("📊 Aplikasi Klasifikasi Kendala EREPORTING")
 st.markdown("""
 1. Upload file CSV/Excel  
 2. Pilih sheet (jika Excel)  
