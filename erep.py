@@ -323,7 +323,7 @@ if file:
             df_sel.loc[valid_mask, 'Label'] = model.predict(svd_f)
             progress_bar.progress(80)
 
-status_text.text("5/5: Mapping ke topik...")
+            status_text.text("5/5: Mapping ke topik...")
             label_to_topik = {
                 0: 'Kendala Versi Template Laporan',
                 1: 'Permintaan Revisi Laporan',
