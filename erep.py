@@ -3,47 +3,38 @@ import pandas as pd
 import joblib
 import re
 import io
-import numpy as np
-import tensorflow as tf
-import requests
-import json
-import nltk
-from io import BytesIO
-from functools import lru_cache
-
 from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 from nltk.corpus import stopwords as nltk_stopwords
-
+import joblib
+import requests
+from io import BytesIO
+import json
+import nltk
+from functools import lru_cache
 nltk.download('stopwords')
 
-st.set_page_config(page_title="Klasifikasi Kendala Ereporting", layout="wide")
+st.set_page_config(page_title="Klasifikasi Kendala EREPORTING", layout="wide")
 
-# -----------------------------
-# 1) Load TFLite interpreter (cache supaya tak di‐load berulang)
-# -----------------------------
 @st.cache_resource
-def load_tflite_interpreter(tflite_path: str) -> tf.lite.Interpreter:
-    interpreter = tf.lite.Interpreter(model_path=tflite_path)
-    interpreter.allocate_tensors()
-    return interpreter
-
-# -----------------------------
-# 2) Load TF–IDF dan SVD transformer (cache juga)
-# -----------------------------
-@st.cache_resource
-def load_tfidf(path: str):
+def load_model(path):
     return joblib.load(path)
 
 @st.cache_resource
-def load_svd(path: str):
+def load_tfidf(path):
     return joblib.load(path)
 
-# -----------------------------
-# 3) Fungsi stemming + stopword removal (dengan cache statis + runtime)
-# -----------------------------
+@st.cache_resource
+def load_svd(path):
+    return joblib.load(path)
+
+model = load_model("voting_clf_erep.joblib")
+tfidf = load_tfidf("tfidf_erep.joblib")
+svd = load_svd("svd_erep.joblib")
+
 @st.cache_data(show_spinner=False)
 def get_stemmed_mapping(text_list):
+    # load cache statis sekali saja
     with open("stem_cache.json", 'r') as f:
         static_cache = json.load(f)
     
@@ -51,13 +42,14 @@ def get_stemmed_mapping(text_list):
     stop_factory = StopWordRemoverFactory()
     combined_stopwords = set(stop_factory.get_stop_words() + nltk_stopwords.words('english'))
     
-    runtime_cache = {}
+    runtime_cache = {}  # untuk simpan kata baru selama runtime fungsi ini
+    
     def clean_and_stem(t):
         t = str(t).lower()
         t = re.sub(r'[^a-z\s]', ' ', t)
         t = re.sub(r'\s+', ' ', t).strip()
 
-        # beberapa pattern substitusi opsional
+        # subs (optional)
         subs = {
             r"\bmasuk\b": "login",
             r"\blog-in\b": "login",
@@ -85,12 +77,13 @@ def get_stemmed_mapping(text_list):
 
         return ' '.join(stemmed_words)
 
-    mapping = { text: clean_and_stem(text) for text in text_list }
+    mapping = {}
+    for text in text_list:
+        mapping[text] = clean_and_stem(text)
+
     return mapping
 
-# -----------------------------
-# 4) Preprocessing teks (menghapus header/footer, sensitive info, dll.)
-# -----------------------------
+    
 def preprocess_text(text):
     def remove_dear_ojk(t):
         return re.sub(r"Dear\s*Bapak/Ibu\s*Helpdesk\s*OJK", "", t, flags=re.IGNORECASE) if isinstance(t, str) else t
@@ -98,12 +91,10 @@ def preprocess_text(text):
     def extract_complaint(t):
         if not isinstance(t, str):
             return "Bagian komplain tidak ditemukan."
-        # ambil bagian antara PATTERN awal dan PATTERN akhir
+        # pola awal dan akhir
         start_p = [r"PERHATIAN: E-mail ini berasal dari pihak di luar OJK.*?attachment.*?link.*?yang terdapat pada e-mail ini."]
-        end_p = [
-            r"(From\s*.*?From|Best regards|Salam|Atas perhatiannya|Regards|Best Regards|Mohon\s*untuk\s*melengkapi\s*data\s*.*tabel\s*dibawah).*,?",
-            r"From:\s*Direktorat\s*Pelaporan\s*Data.*"
-        ]
+        end_p = [r"(From\s*.*?From|Best regards|Salam|Atas perhatiannya|Regards|Best Regards|Mohon\s*untuk\s*melengkapi\s*data\s*.*tabel\s*dibawah).*,?",
+                 r"From:\s*Direktorat\s*Pelaporan\s*Data.*"]
         m_start = None
         for pat in start_p:
             matches = list(re.finditer(pat, t, re.DOTALL|re.IGNORECASE))
@@ -115,8 +106,7 @@ def preprocess_text(text):
             m = re.search(pat, t, re.DOTALL|re.IGNORECASE)
             if m:
                 t = t[:m.start()].strip()
-
-        # hapus pola sensitive info
+        # hapus sensitive info
         sens = [
             r"Nama\s*Terdaftar\s*.*",
             r"Email\s*.*",
@@ -142,11 +132,12 @@ def preprocess_text(text):
             r"demikian\s*.*",
             r"Demikian\s*.*",
             r"Demikianlah\s*.*"
-        ]
+            ]
         for pat in sens:
             t = re.sub(pat, "", t, flags=re.IGNORECASE)
         return t or "Bagian komplain tidak ditemukan."
 
+    # Bersihkan kalimat umum
     def clean_email_text(t):
         pats = [
             r"(?i)(terlampir|mohon\s*bantuan|terima\s*kasi|yth|daripada\s*\w+\s*\@.*?\.com)",
@@ -187,14 +178,15 @@ def preprocess_text(text):
             r"(?i)PT\.\s*Jasa\s*Raharja\s*tidak\s*bertanggung\s*jawab\s*atas\s*kerugian\s*yang\s*ditimbulkan\s*oleh\s*virus\s*yang\s*ditularkan\s*melalui\s*e-Mail\s*ini.*",
             r"(?i)Jika\s*Anda\s*secara\s*tidak\s*seganja\s*menerima\s*e-Mail\s*ini\s*,\s*untuk\s*segera\s*memberitahukan\s*ke\s*alamat\s*e-Mail\s*pengirim\s*serta\s*menghapus\s*e-Mail\s*ini\s*beserta\s*seluruh\s*lampirannya\s*.*",
             r"(?i)\s*Please\s*reply\s*to\s*this\s*electronic\s*mail\s*to\s*notify\s*the\s*sender\s*of\s*its\s*incorrect\s*delivery\s*,\s*and\s*then\s*delete\s*both\s*it\s*and\s*your\s*reply.*",
-        ]
+            ]
         for pat in pats:
             t = re.sub(pat, "", t, flags=re.IGNORECASE)
         return t
 
+    # Cut off footer/forward
     def cut_off_general(c):
         cut_keywords = [
-            "PT Mandiri Utama FinanceSent: Wednesday, November 6, 2024 9:11 AMTo",
+           "PT Mandiri Utama FinanceSent: Wednesday, November 6, 2024 9:11 AMTo",
             "Atasdan kerjasama, kami ucapkan h Biro Hukum dan KepatuhanPT Jasa Raharja (Persero)Jl. HR Rasuna Said Kav. C-2 12920Jakarta Selatan",
             "h._________",
             "h Imawan FPT ABC Multifinance Pesan File Kirim (PAPUPPK/2024-12-31/Rutin/Gagal)Kotak MasukTelusuri semua pesan berlabel Kotak MasukHapus",
@@ -255,19 +247,14 @@ def preprocess_text(text):
     comp = cut_off_general(comp)
     return comp
 
-# -----------------------------
-# 5) Helper: konversi DataFrame hasil ke Excel (untuk download)
-# -----------------------------
 def to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name='Hasil Prediksi')
     return output.getvalue()
 
-# =============================
-#       Bagian Streamlit
-# =============================
-st.title("📊 Aplikasi Klasifikasi Kendala Ereporting")
+# --- Streamlit UI ---
+st.title("📊 Aplikasi Klasifikasi Kendala APOLO IKNB")
 st.markdown("""
 1. Upload file CSV/Excel  
 2. Pilih sheet (jika Excel)  
@@ -275,7 +262,6 @@ st.markdown("""
 4. Klik **Proses Prediksi**  
 5. Download hasil  
 """)
-
 st.sidebar.header("📁 Upload File")
 file = st.sidebar.file_uploader("📎 Pilih file CSV/Excel", type=['csv','xlsx'])
 
@@ -297,59 +283,48 @@ if file:
     col = st.selectbox("📝 Kolom teks kendala ada di kolom:", data.columns)
 
     if st.button("🚀 Proses Prediksi"):
+        # 0) Simpan salinan original
         original = data.copy()
+        # 1) Buat df khusus kolom terpilih
         df_sel = data[[col]].copy()
 
         progress_bar = st.progress(0)
         status_text = st.empty()
-
         with st.spinner("⏳ Memproses......"):
-            # 1/5: Preprocessing teks
             status_text.text("1/5: Preprocessing teks...")
+            # Preprocessing dasar dulu
             df_sel['Pre_Cleaned'] = df_sel[col].fillna('').apply(preprocess_text)
+            
+            # Ambil unique teks hasil preprocess
             unique_texts = df_sel['Pre_Cleaned'].unique().tolist()
-            stemmed_map = get_stemmed_mapping(unique_texts)
+            
+            # Dapatkan mapping kata dari cache statis + stemming runtime
+            stemmed_map = get_stemmed_mapping(unique_texts)  # ini versi cache statis + stemming
+            
+            # Map hasil stemmed ke kolom Cleaned
             df_sel['Cleaned'] = df_sel['Pre_Cleaned'].map(stemmed_map)
+            
             progress_bar.progress(20)
 
-            # 2/5: Transformasi TF-IDF
+
+            # 2/5 TF-IDF
             status_text.text("2/5: Transformasi TF-IDF...")
             valid_mask = df_sel['Cleaned'].notna()
-            tfidf = load_tfidf("tfidf_erep.joblib")
             tfidf_m = tfidf.transform(df_sel.loc[valid_mask, 'Cleaned'].tolist())
             progress_bar.progress(40)
 
-            # 3/5: Reduksi dimensi dengan SVD
+            # 3/5 SVD
             status_text.text("3/5: Reduksi dimensi dengan SVD...")
-            svd = load_svd("svd_erep.joblib")
             svd_f = svd.transform(tfidf_m)
             progress_bar.progress(60)
 
-            # 4/5: Prediksi pakai TFLite
-            status_text.text("4/5: Memprediksi label (TFLite)...")
-            tflite_path = "akurasi_81.tflite"  # <-- Ganti dengan path sebenarnya
-            interpreter = load_tflite_interpreter(tflite_path)
-            input_details = interpreter.get_input_details()
-            output_details = interpreter.get_output_details()
-
-            # Lakukan inferensi per‐sampel
-            preds = []
-            for i in range(len(svd_f)):
-                input_data = np.expand_dims(svd_f[i], axis=0).astype(input_details[0]['dtype'])
-                interpreter.set_tensor(input_details[0]['index'], input_data)
-                interpreter.invoke()
-                out = interpreter.get_tensor(output_details[0]['index'])
-                pred_label = int(np.argmax(out, axis=1)[0])
-                preds.append(pred_label)
-
-            df_sel.loc[valid_mask, 'Label'] = preds
+            # 4/5 Prediksi
+            status_text.text("4/5: Memprediksi label...")
+            df_sel.loc[valid_mask, 'Label'] = model.predict(svd_f)
             progress_bar.progress(80)
 
-            # 5/5: (Mapping ke topik sudah dihapus, hanya tampilkan label encoded)
-            status_text.text("5/5: Selesai. Menampilkan Label (encoded).")
-            progress_bar.progress(100)
 
-        # Gabungkan hasil prediksi kembali ke data asli
+        # 2) Tempelkan hasil kembali ke original
         original = original.join(df_sel[['Label']])
 
         st.success("✅ Selesai")
@@ -360,7 +335,7 @@ if file:
         st.download_button(
             label="📥 Download Hasil Lengkap",
             data=excel_data,
-            file_name='hasil_lengkap_ereporting.xlsx',
+            file_name='hasil_lengkap_EREPORTING.xlsx',
             mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
 else:
